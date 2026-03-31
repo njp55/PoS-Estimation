@@ -24,15 +24,35 @@ if 'base_pos' not in st.session_state:
 if 'projects' not in st.session_state:
     st.session_state.projects = []
 
-# プロジェクト入力用のデフォルトパラメータ初期化関数
+# Excelのパラメータをデフォルトとして初期化する関数
 def reset_current_params():
+    # ご提供いただいたExcelの項目リスト
+    excel_params = [
+        "作用機序 (MoA) の明確性",
+        "標的の性質 (Host vs Non-host)",
+        "薬理作用 (刺激剤 vs 拮抗剤)",
+        "組織曝露選択性 (STR/STAR)",
+        "分子の物理化学的性質",
+        "標的結合タンパク質数",
+        "バイオマーカーの活用",
+        "オンコロジー領域の効果",
+        "代替エンドポイント相関",
+        "疾患領域 (TA)",
+        "モダリティ (創薬技術)",
+        "臨床・免疫学的指標",
+        "創薬の新規性 (FiC vs Me-too)",
+        "導入経緯 (Licensed-in)",
+        "リード適応症 (Lead indication)"
+    ]
+    
+    # 全てデフォルトでは未チェック(Apply=False)・無影響(Value=1.0)で生成
     st.session_state.current_params = pd.DataFrame({
-        'Apply': [False, False, False], # デフォルトはチェックなし
-        'Parameter Name': ['バイオマーカー活用', '新規MoAの技術的ハードル', '自社創製品'],
-        'Distribution': ['Normal', 'Triangular', 'Fixed'],
-        'Value_Mean_Mode': [2.0, 0.8, 1.2],
-        'Std_Min': [0.2, 0.5, None],
-        'Max': [None, 1.0, None]
+        'Apply': [False] * len(excel_params),
+        'Parameter Name': excel_params,
+        'Distribution': ['Fixed'] * len(excel_params),  # 初期は固定値
+        'Value_Mean_Mode': [1.0] * len(excel_params),   # 1.0 (オッズへの影響なし) を基準とする
+        'Std_Min': [0.0] * len(excel_params),
+        'Max': [1.0] * len(excel_params)
     })
 
 if 'current_params' not in st.session_state:
@@ -53,7 +73,6 @@ with tab1:
     st.header("⚙️ システム全体の初期設定")
     
     st.subheader("シミュレーション基本設定")
-    # モンテカルロ試行回数の動的設定
     st.session_state.mc_trials = st.number_input(
         "モンテカルロ試行回数 (例: クイック=1000, 精緻=100000)", 
         min_value=1000, max_value=1000000, value=st.session_state.mc_trials, step=1000
@@ -79,9 +98,8 @@ with tab2:
             current_phase = st.selectbox("現在のフェーズ", ["Phase 1", "Phase 2", "Phase 3", "NDA"])
         
         st.subheader("プロジェクト個別パラメータの設定")
-        st.markdown("このプロジェクト固有のPoS変動要因を設定します。`Apply`にチェックを入れた項目のみが計算に適用されます。<br>行の追加・削除も自由に行えます。", unsafe_allow_html=True)
+        st.markdown("このプロジェクト固有のPoS変動要因を設定します。`Apply`にチェックを入れた項目のみが計算に適用されます。<br>デフォルトとしてマスター項目が読み込まれていますが、行の追加・削除・値の変更は自由に行えます。", unsafe_allow_html=True)
         
-        # 分布をプルダウンで選択できる Data Editor
         edited_params = st.data_editor(
             st.session_state.current_params,
             num_rows="dynamic",
@@ -103,7 +121,6 @@ with tab2:
         )
 
         if st.button("プロジェクトを登録", type="primary"):
-            # 適用にチェックが入っている行だけを抽出
             applied_params = edited_params[edited_params['Apply'] == True].copy()
             
             st.session_state.projects.append({
@@ -114,25 +131,22 @@ with tab2:
                 "Params": applied_params
             })
             st.success(f"プロジェクト {proj_id} を登録しました！")
-            reset_current_params() # 入力フォームを初期状態にリセット
+            reset_current_params()
             st.rerun()
 
     st.subheader("セッションベースのパイプライン一覧")
     if st.session_state.projects:
-        # プロジェクトのリストと削除ボタンの生成
         for idx, proj in enumerate(st.session_state.projects):
             with st.container():
                 c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 3, 1])
                 c1.write(f"**{proj['ID']}**")
                 c2.write(f"{proj['Modality']} / {proj['Indication']}")
                 c3.write(f"{proj['Current Phase']}")
-                c4.write(f"個別パラメータ数: {len(proj['Params'])}")
-                # 削除機能の実装
+                c4.write(f"個別パラメータ適用数: {len(proj['Params'])}")
                 if c5.button("削除 🗑️", key=f"del_proj_{idx}"):
                     st.session_state.projects.pop(idx)
                     st.rerun()
                     
-        # パラメータデータを除外したサマリー表示用データフレーム
         summary_df = pd.DataFrame([{k: v for k, v in p.items() if k != 'Params'} for p in st.session_state.projects])
         st.dataframe(summary_df, use_container_width=True)
     else:
@@ -147,19 +161,23 @@ with tab3:
     if st.button("🚀 シミュレーションを一斉起動", type="primary") and st.session_state.projects:
         trials = st.session_state.mc_trials
         results = []
+        phase_order = ['Phase 1', 'Phase 2', 'Phase 3', 'NDA']
         
         for proj in st.session_state.projects:
-            # 1. ベースラインの取得
-            base_rates = st.session_state.base_pos[st.session_state.base_pos['Modality'] == proj['Modality']].iloc[0]
-            phases = ['Phase 1', 'Phase 2', 'Phase 3', 'NDA']
-            base_overall_pos = np.prod([base_rates[p] for p in phases])
+            # 1. ベースラインの取得と、完了済みフェーズの補正
+            base_rates = st.session_state.base_pos[st.session_state.base_pos['Modality'] == proj['Modality']].iloc[0].copy()
+            current_phase_idx = phase_order.index(proj['Current Phase'])
             
-            # 2. 調整パラメータの分布サンプリング (個別パラメータ適用)
+            # 【新規追加ロジック】現在のフェーズより前の確率を 1.0 (100%) に書き換える
+            for i in range(current_phase_idx):
+                base_rates[phase_order[i]] = 1.0
+                
+            base_overall_pos = np.prod([base_rates[p] for p in phase_order])
+            
+            # 2. 調整パラメータの分布サンプリング
             modifiers = np.ones(trials)
-            
             for _, param_row in proj['Params'].iterrows():
                 dist = param_row['Distribution']
-                # NaN対策 (値が入力されていない場合は安全なデフォルト値を使用)
                 val_mean = param_row['Value_Mean_Mode'] if pd.notna(param_row['Value_Mean_Mode']) else 1.0
                 std_min = param_row['Std_Min'] if pd.notna(param_row['Std_Min']) else 0.0
                 v_max = param_row['Max'] if pd.notna(param_row['Max']) else 1.0
@@ -175,42 +193,50 @@ with tab3:
                 else:
                     sample = np.ones(trials)
                 
-                modifiers *= sample  # 総合モディファイアの算出
+                modifiers *= sample
             
             # 3. オッズ比を用いた確率の補正計算
-            base_odds = base_overall_pos / (1 - base_overall_pos)
-            adjusted_odds = base_odds * modifiers
-            adjusted_pos_array = adjusted_odds / (1 + adjusted_odds)
+            if base_overall_pos == 1.0:
+                # 既に全フェーズ完了・承認済みなどで100%の場合はそのまま（ゼロ除算回避）
+                adjusted_pos_array = np.ones(trials)
+            else:
+                base_odds = base_overall_pos / (1 - base_overall_pos)
+                adjusted_odds = base_odds * modifiers
+                adjusted_pos_array = adjusted_odds / (1 + adjusted_odds)
             
             # 統計結果の集約
             median_pos = np.median(adjusted_pos_array)
             p5_pos = np.percentile(adjusted_pos_array, 5)
             p95_pos = np.percentile(adjusted_pos_array, 95)
             
-            # 差分（Delta）の計算
             delta_pts = (median_pos - base_overall_pos) * 100
             
-            # Phase3到達確率（Phase1×Phase2）
-            p3_progression = base_rates['Phase 1'] * base_rates['Phase 2']
+            # Phase3到達確率（現在のフェーズがPhase 3以降なら100%）
+            if current_phase_idx >= 2:
+                p3_progression = 1.0
+            else:
+                p3_progression = base_rates['Phase 1'] * base_rates['Phase 2']
             
             results.append({
                 "ID": proj["ID"],
                 "Modality": proj["Modality"],
+                "現在のPhase": proj["Current Phase"],
                 "標準PoS (%)": base_overall_pos * 100,
                 "調整後PoS 中央値 (%)": median_pos * 100,
                 "悲観(5%) - 楽観(95%)": f"{p5_pos*100:.1f}% - {p95_pos*100:.1f}%",
                 "Delta (pts)": delta_pts,
                 "P3到達確率 (%)": p3_progression * 100,
-                "base_rates": base_rates
+                "eff_base_rates": base_rates # チャート用（補正済み）
             })
             
         # ==========================================
         # ポートフォリオ・サマリーと可視化
         # ==========================================
         res_df = pd.DataFrame(results)
-        display_cols = ["ID", "Modality", "標準PoS (%)", "調整後PoS 中央値 (%)", "悲観(5%) - 楽観(95%)", "Delta (pts)", "P3到達確率 (%)"]
+        display_cols = ["ID", "Modality", "現在のPhase", "標準PoS (%)", "調整後PoS 中央値 (%)", "悲観(5%) - 楽観(95%)", "Delta (pts)", "P3到達確率 (%)"]
         
         st.subheader("ポートフォリオ・サマリー (標準 vs 調整後)")
+        st.markdown("※「標準PoS」および「P3到達確率」は、現在のフェーズより前の生存率を100%として算出されています。")
         st.dataframe(res_df[display_cols].style.format({
             "標準PoS (%)": "{:.1f}",
             "調整後PoS 中央値 (%)": "{:.1f}",
@@ -220,9 +246,8 @@ with tab3:
         
         st.subheader("アトリション・ファンネル分析 (Attrition Funnel Chart)")
         
-        # [バグ修正] key引数を追加して一意なIDを割り当てる
         for idx, row in res_df.iterrows():
-            br = row['base_rates']
+            br = row['eff_base_rates']
             surv_p1 = 100.0
             surv_p2 = surv_p1 * br['Phase 1']
             surv_p3 = surv_p2 * br['Phase 2']
@@ -234,9 +259,7 @@ with tab3:
                 x = [surv_p1, surv_p2, surv_p3, surv_nda, surv_market],
                 textinfo = "value+percent initial"
             ))
-            fig.update_layout(title=f"プロジェクト: {row['ID']} ({row['Modality']}) の標準ベースラインファンネル")
-            
-            # key引数にプロジェクトIDとインデックスを組み合わせた一意の文字列を渡す
+            fig.update_layout(title=f"プロジェクト: {row['ID']} ({row['Modality']}) / 開始: {row['現在のPhase']}")
             st.plotly_chart(fig, use_container_width=True, key=f"funnel_chart_{row['ID']}_{idx}")
 
     elif not st.session_state.projects:
