@@ -155,7 +155,7 @@ with tab1:
             proj_export = []
             proj_params_export = []
             for p in st.session_state.projects:
-                applied_params_str = ",".join(p['Params']['Parameter Name'].tolist())
+                applied_params_str = ",".join(p['Parameters']['Parameter Name'].tolist())
                 proj_export.append({"ID": p["ID"], "Modality": p["Modality"], "Indication": p["Indication"], "Current Phase": p["Current Phase"], "Applied_Params": applied_params_str})
                 for _, r in p['Params'].iterrows():
                     proj_params_export.append({"Project_ID": p["ID"], "Parameter Name": r["Parameter Name"], "Distribution": r["Distribution"], "Value_Mean_Mode": r["Value_Mean_Mode"], "Std_Min": r["Std_Min"], "Max": r["Max"]})
